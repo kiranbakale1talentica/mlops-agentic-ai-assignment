@@ -1,0 +1,87 @@
+# ── CI/CD Pipeline: MLOps Agentic AI → AWS EC2 ───────────────────────────────
+# Module 7: CI/CD for ML — GitHub Actions
+# Module 9: Security & Governance — SSH key secrets, IAM-free deployment
+#
+# Pipeline stages:
+#   1. deploy  — SSHes into EC2, pulls latest code, rebuilds containers (main only)
+#
+# Required GitHub Secrets:
+#   EC2_HOST          — public IP or DNS of your EC2 instance
+#   EC2_USERNAME      — usually "ubuntu" or "ec2-user"
+#   EC2_SSH_KEY       — contents of your .pem private key file
+#   OPENROUTER_API_KEY — written to .env on EC2
+
+name: CI/CD Pipeline — EC2 Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  # ── Deploy to EC2 ────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to AWS EC2
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 30m
+          script: |
+            set -e
+
+            echo "──────────────────────────────────────"
+            echo "Deploying MLOps Agentic AI"
+            echo "Commit: ${{ github.sha }}"
+            echo "──────────────────────────────────────"
+
+            # Clone repo on first deploy, pull on subsequent deploys
+            if [ ! -d "/app/mlops-agentic-ai" ]; then
+              echo "First deploy — cloning repo..."
+              mkdir -p /app
+              git clone https://github.com/${{ github.repository }}.git /app/mlops-agentic-ai
+            else
+              echo "Pulling latest code..."
+              cd /app/mlops-agentic-ai
+              git pull origin main
+            fi
+
+            cd /app/mlops-agentic-ai
+
+            # Write .env file from GitHub secrets (never committed to git)
+            echo "Writing .env file..."
+            echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" > .env
+            echo "MODEL_NAME=openai/gpt-4o-mini" >> .env
+
+            # Stop existing containers
+            docker compose down --remove-orphans || true
+
+            # Free disk space: remove old images and build cache before rebuilding
+            echo "Freeing disk space..."
+            docker system prune -af
+            df -h /
+
+            # Build and restart containers
+            echo "Building and starting containers..."
+            docker compose up --build -d
+
+            # Wait a moment then verify both containers are running
+            sleep 10
+            docker compose ps
+
+            echo "──────────────────────────────────────"
+            echo "Deployment complete!"
+            echo "API : http://${{ secrets.EC2_HOST }}:8000"
+            echo "UI  : http://${{ secrets.EC2_HOST }}:8501"
+            echo "──────────────────────────────────────"
